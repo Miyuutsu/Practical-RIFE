@@ -10,6 +10,7 @@ import _thread
 import skvideo.io
 from queue import Queue, Empty
 from model.pytorch_msssim import ssim_matlab
+import subprocess
 
 warnings.filterwarnings("ignore")
 
@@ -132,12 +133,31 @@ vid_out = None
 if args.png:
     if not os.path.exists('vid_out'):
         os.mkdir('vid_out')
-else:
+if not args.png:
     if args.output is not None:
         vid_out_name = args.output
     else:
         vid_out_name = '{}_{}X_{}fps.{}'.format(video_path_wo_ext, args.multi, int(np.round(args.fps)), args.ext)
-    vid_out = cv2.VideoWriter(vid_out_name, fourcc, args.fps, (w, h))
+
+    # FFmpeg command
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",  # overwrite
+        "-f", "rawvideo",
+        "-vcodec", "rawvideo",
+        "-pix_fmt", "rgb24",  # input pixel format
+        "-s", f"{w}x{h}",     # frame size
+        "-r", str(args.fps),   # input framerate
+        "-i", "-",             # read from stdin
+        "-c:v", "libx264",
+        "-crf", "15",
+        "-preset", "veryslow",
+        "-pix_fmt", "yuv444p",  # output pixel format
+        vid_out_name
+    ]
+
+    # Open subprocess
+    vid_out_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
 
 def clear_write_buffer(user_args, write_buffer):
     cnt = 0
@@ -149,7 +169,8 @@ def clear_write_buffer(user_args, write_buffer):
             cv2.imwrite('vid_out/{:0>7d}.png'.format(cnt), item[:, :, ::-1])
             cnt += 1
         else:
-            vid_out.write(item[:, :, ::-1])
+            # Write frame to ffmpeg stdin as bytes
+            vid_out_proc.stdin.write(item.astype(np.uint8).tobytes())
 
 def build_read_buffer(user_args, read_buffer, videogen):
     try:
@@ -277,14 +298,6 @@ import time
 while(not write_buffer.empty()):
     time.sleep(0.1)
 pbar.close()
-if not vid_out is None:
-    vid_out.release()
-
-# move audio to new video file if appropriate
-if args.png == False and fpsNotAssigned == True and not args.video is None:
-    try:
-        transferAudio(args.video, vid_out_name)
-    except:
-        print("Audio transfer failed. Interpolated video will have no audio")
-        targetNoAudio = os.path.splitext(vid_out_name)[0] + "_noaudio" + os.path.splitext(vid_out_name)[1]
-        os.rename(targetNoAudio, vid_out_name)
+if not args.png:
+    vid_out_proc.stdin.close()
+    vid_out_proc.wait()
